@@ -18,7 +18,7 @@ def call(Map configMap){
         booleanParam(name: 'deploy', defaultValue: false, description: 'Toggle this value')
     }
 
-    
+    stages{
           stage ('UNIT TESTING') {
             steps {
                 script {
@@ -42,5 +42,6 @@ def call(Map configMap){
             }
         }
      }
+   }
 }
 
