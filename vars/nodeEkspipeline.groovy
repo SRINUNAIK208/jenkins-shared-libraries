@@ -1,73 +1,140 @@
 def call(Map configMap){
-    pipeline {
+   pipeline {
     agent {
-        label 'AGENT-1'
+        label "AGENT-1"
     }
-    environment{
+    environment {
         appVersion = ''
         REGION = 'us-east-1'
-        PROJECT = 'roboshop'
-        COMPONENT = 'catalogue'
         ACCOUNT_ID = '824333137275'
+        PROJECT = configMap.get('project')
+        COMPONENT = configMap.get('component')
     }
     options {
         timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
-        // ansiColor('xterm')
     }
     parameters{
-        string(name: 'appVersion', description: 'Image version of the application')
-        choice(name: 'deploy_to', choices: ['dev', 'qa','prod'], description: 'pick the environment')
-
+        booleanParam(name: 'deploy', defaultValue: false, description: 'Toggle this value')
     }
-    stages{
-        stage('Deploy'){
-            steps{
-                script{
-                    withAWS(credentials: 'aws-auth', region: 'us-east-1'){
-                     sh """
-                       aws eks update-kubeconfig --region $REGION --name "$PROJECT"
-                       kubectl get nodes
-                       sed -i "s/IMAGE_VERSION/${params.appVersion}/g" values-${params.deploy_to}.yaml
-                       helm upgrade --install $COMPONENT -n roboshop -f values-${params.deploy_to}.yaml .
-                     """
-                    }
 
+    stages {
+        stage ('Read package.json') {
+            steps {
+                script {
+                   def packageJson = readJSON file: 'package.json'
+                   appVersion = packageJson.version
+                   echo "package version: ${appVersion}"
                 }
-              
-            }
 
-        
+            }
         }
-        stage('check the status'){
-            steps{
-                script{
-                    withAWS(credentials: 'aws-auth', region: 'us-east-1'){
-                      def deploymentStatus = sh(returnStdout: true, script: "kubectl rollout status deployment/$COMPONENT -n roboshop --timeout=30s || echo FAILED").trim();
-                      if(deploymentStatus.contains('succssfully rollout'))
-                      {
-                         echo "deployment is success"
-                      }
-                      else
-                      {
+        stage ('install dependencies') {
+            steps {
+                script {
+                    sh """
+                       npm install
+                       echo "dependencies installed"
+                    """
+                }
+            }
+        }
+          stage ('UNIT TESTING') {
+            steps {
+                script {
+                    sh """
+                       echo "unit testing"
+                    """
+                }
+            }
+        }
+        // stage('sonar scan'){
+        //     environment {
+        //         scannerHome = tool 'sonar-8.0'
+        //     }
+        //     steps{
+        //         script{
+        //             withSonarQubeEnv(installationName: 'sonar-8.0'){
+        //                 sh "${scannerHome}/bin/sonar-scaner"
+        //             }
+        //         }
+        //     }
+        // }
+         stage ('Docker build') {
+            steps {
+                script {
+                    withAWS(credentials: 'aws-auth', region: 'us-east-1') {
                         sh """
-                          helm rollback $COMPONENT -n roboshop
-                          sleep 20
+                          export DOCKER_BUILDKIT=0
+                          aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
+                          docker build -t ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${PROJECT}/${COMPONENT}:${appVersion} .
+                          docker push ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${PROJECT}/${COMPONENT}:${appVersion}
                         """
-                         def rollbackStatus  = sh(returnStdout: true, script: "kubectl rollout status deployment/$COMPONENT -n roboshop --timeout=30s || echo FAILED").trim();
-                         if(rollbackStatus .contains('successfully rolled out'))
-                         {
-                            error "rollback is success deployment is failure"
-                          }
-                          else{
-                            error "rollback is failure and deploymenet also failure"
-                          }
-                      }
                     }
                 }
             }
+
         }
-       
-    }
-}
+        // stage('check ecr scan'){
+        //     steps{
+        //         script{
+        //             withAWS(credentials: 'aws-auth', region: 'us-east-1') {
+        //                 sh """
+        //                   sleep 30
+        //                   aws ecr describe-image-scan-findings \
+        //                    --repository-name ${PROJECT}/${COMPONENT} \
+        //                    --image-id imageTag=${appVersion} \
+        //                    --region us-east-1 \
+        //                    --query 'imageScanFindings.findingSeverityCounts' \
+        //                    --output json > scan.json
+        //                 """
+        //             }
+        //         }   
+        //     }
+        // }
+        // stage('Quality gate'){
+        //     steps{
+        //         script{
+        //             def scan = readJSON file: 'scan.json'
+        //             def high = scan.HIGH ?: 0
+        //             def critical = scan.CRITICAL ?: 0
+
+        //     if (high> 0 || critical > 0) {
+        //         error "❌ Vulnerabilities found: HIGH=${high}, CRITICAL=${critical}"
+        //     } else {
+        //         echo "✅ Image is safe"
+        //     }
+        //         }
+        //     }
+        // }
+
+        stage("Trigger deploy"){
+            when{
+                expression { params.deploy }
+            }
+            steps{
+                script{
+                   build job: 'catalogue-cd',
+                   parameters: [
+                     string(name: 'appVersion', value: "${appVersion}"),
+                     string(name:'deploy_to', value: 'dev')
+                   ],
+                   propagate: false,
+                   wait: false
+                }
+            }
+        }
+    
+
+   
+        stage('Build') {
+            steps{
+                script {
+                  sh """
+                     echo "hello"
+                  """
+                }
+            }
+        }
+     }
 }
